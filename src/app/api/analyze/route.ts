@@ -10,7 +10,7 @@ import axios from "axios";
 // ---------- Tipos ----------
 interface AnalyzeRequest {
   studentEmail?: string;
-  imageUrl: string;
+  imageBase64: string; // Mudou de imageUrl para imageBase64 puro enviado pelo Apps Script
   questionTitle?: string;
   timestamp: string;
 }
@@ -64,12 +64,12 @@ export async function GET() {
 // ---------- POST: processa nova submissão ----------
 export async function POST(request: NextRequest) {
   const body: AnalyzeRequest = await request.json();
-  const { imageUrl, timestamp } = body;
+  const { imageBase64, timestamp } = body;
   const studentEmail = body.studentEmail || "anonimo@aluno.com";
   const questionTitle = body.questionTitle || "Sem título";
 
-  if (!imageUrl) {
-    return NextResponse.json({ error: "imageUrl é obrigatório" }, { status: 400 });
+  if (!imageBase64) {
+    return NextResponse.json({ error: "imageBase64 é obrigatório" }, { status: 400 });
   }
 
   const deepseekApiKey = process.env.DEEPSEEK_API_KEY;
@@ -93,17 +93,9 @@ export async function POST(request: NextRequest) {
   try {
     console.log(`[NeuroMap] Analisando: ${studentEmail} | ${questionTitle}`);
 
-    // Etapa 1: Download da imagem como arraybuffer
-    const imageResponse = await axios.get(imageUrl, {
-      responseType: "arraybuffer",
-      timeout: 15000,
-      headers: { Accept: "image/*" },
-    });
-
-    // Etapa 2: Buffer → Base64 → data URL
-    const base64Image = Buffer.from(imageResponse.data as ArrayBuffer).toString("base64");
-    const mimeType = (imageResponse.headers["content-type"] as string) || "image/jpeg";
-    const dataUrl = `data:${mimeType};base64,${base64Image}`;
+    // Etapa 1 e 2 removidas: não fazemos mais download do Google Drive pois
+    // o Apps Script já enviou o Base64 completo (dataUrl) no payload.
+    const dataUrl = imageBase64;
 
     // Etapa 3: Chamada DeepSeek Vision
     const deepseekResponse = await axios.post(
