@@ -10,7 +10,8 @@ import axios from "axios";
 // ---------- Tipos ----------
 interface AnalyzeRequest {
   studentEmail?: string;
-  imageBase64: string; // Mudou de imageUrl para imageBase64 puro enviado pelo Apps Script
+  fileId: string;    // ID real do arquivo
+  driveToken: string; // Token OAuth do Apps Script
   questionTitle?: string;
   timestamp: string;
 }
@@ -64,12 +65,12 @@ export async function GET() {
 // ---------- POST: processa nova submissão ----------
 export async function POST(request: NextRequest) {
   const body: AnalyzeRequest = await request.json();
-  const { imageBase64, timestamp } = body;
+  const { fileId, driveToken, timestamp } = body;
   const studentEmail = body.studentEmail || "anonimo@aluno.com";
   const questionTitle = body.questionTitle || "Sem título";
 
-  if (!imageBase64) {
-    return NextResponse.json({ error: "imageBase64 é obrigatório" }, { status: 400 });
+  if (!fileId || !driveToken) {
+    return NextResponse.json({ error: "fileId e driveToken são obrigatórios" }, { status: 400 });
   }
 
   const deepseekApiKey = process.env.DEEPSEEK_API_KEY;
@@ -93,9 +94,22 @@ export async function POST(request: NextRequest) {
   try {
     console.log(`[NeuroMap] Analisando: ${studentEmail} | ${questionTitle}`);
 
-    // Etapa 1 e 2 removidas: não fazemos mais download do Google Drive pois
-    // o Apps Script já enviou o Base64 completo (dataUrl) no payload.
-    const dataUrl = imageBase64;
+    // Etapa 1: Download seguro e direto pela Google Drive API
+    // Vantagem: Ignora limite de Vercel de 4.5MB e não muda permissões públicas
+    const downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+    const imageResponse = await axios.get(downloadUrl, {
+      responseType: "arraybuffer",
+      timeout: 15000,
+      headers: { 
+        Authorization: `Bearer ${driveToken}`,
+        Accept: "image/*" 
+      },
+    });
+
+    // Etapa 2: Converte para Base64 no backend (a Vercel suporta até 50MB aqui)
+    const base64Image = Buffer.from(imageResponse.data as ArrayBuffer).toString("base64");
+    const mimeType = (imageResponse.headers["content-type"] as string) || "image/jpeg";
+    const dataUrl = `data:${mimeType};base64,${base64Image}`;
 
     // Etapa 3: Chamada DeepSeek Vision
     const deepseekResponse = await axios.post(
