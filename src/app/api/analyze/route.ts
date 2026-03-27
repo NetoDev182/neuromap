@@ -134,8 +134,8 @@ export async function POST(request: NextRequest) {
                 text: `${DUVAL_SYSTEM_PROMPT}\n\nQuestão: "${questionTitle}"\n\nAnalise a resolução acima segundo a Teoria de Duval e retorne o JSON de diagnóstico.`,
               },
               {
-                inline_data: {
-                  mime_type: mimeType,
+                inlineData: {
+                  mimeType: mimeType,
                   data: pureBase64,
                 },
               },
@@ -144,7 +144,7 @@ export async function POST(request: NextRequest) {
         ],
         generationConfig: {
           temperature: 0.1,
-          response_mime_type: "application/json",
+          responseMimeType: "application/json",
         },
       },
       {
