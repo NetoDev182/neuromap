@@ -1,5 +1,5 @@
 /**
- * NeuroMap — Google Apps Script: "O Mensageiro" (v2 — corrigido)
+ * NeuroMap — Google Apps Script: "O Mensageiro" (v4 — produção)
  *
  * CORREÇÕES v2:
  * - Bug 1 corrigido: detecção de upload por tipo (FILE_UPLOAD) em vez de keyword no título

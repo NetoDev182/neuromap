@@ -1,34 +1,47 @@
 /**
  * NeuroMap - API Route: /api/analyze
- * "O Cérebro" — recebe o POST do Google Apps Script,
- * baixa a imagem, converte em Base64 e chama o DeepSeek Vision.
+ * POST: recebe do Apps Script, analisa com DeepSeek, salva na memória
+ * GET:  retorna os últimos diagnósticos para o Dashboard
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
 
-// ---------- Tipos de contrato ----------
+// ---------- Tipos ----------
 interface AnalyzeRequest {
-  studentEmail?: string;       // FIX Bug 4: agora opcional
+  studentEmail?: string;
   imageUrl: string;
-  questionTitle?: string;      // contexto da questão para o prompt
+  questionTitle?: string;
   timestamp: string;
 }
 
 interface DuvalMetrics {
-  assimilacao: number;  // 1-4
+  assimilacao: number;
   tratamento: number;
   conversao: number;
   coordenacao: number;
 }
 
-interface DeepSeekResponse {
+export interface DiagnosisRecord {
+  id: string;
+  studentEmail: string;
+  questionTitle: string;
+  timestamp: string;
   metrics: DuvalMetrics;
   insight: string;
 }
 
-// ---------- System Prompt da Teoria de Duval ----------
-const DUVAL_SYSTEM_PROMPT = `Você é um PhD em Educação Matemática especialista na Teoria de Representação Semiótica de Raymond Duval (TRRS). 
+// ---------- In-memory store (MVP sem banco de dados) ----------
+// Em produção, substitua por: Supabase, Prisma, Vercel KV, etc.
+// Este store persiste enquanto a instância serverless estiver ativa.
+declare global {
+  // eslint-disable-next-line no-var
+  var __neuromapStore: DiagnosisRecord[];
+}
+if (!global.__neuromapStore) global.__neuromapStore = [];
+
+// ---------- System Prompt Duval ----------
+const DUVAL_SYSTEM_PROMPT = `Você é um PhD em Educação Matemática especialista na Teoria de Representação Semiótica de Raymond Duval (TRRS).
 Analise a imagem da resolução do aluno e identifique o desempenho em 4 categorias:
 1. Assimilação - compreensão inicial do enunciado e identificação do que é pedido
 2. Tratamento - manipulação de representações dentro de um mesmo registro semiótico
@@ -39,77 +52,73 @@ Atribua notas de 1 (Insuficiente) a 4 (Ótimo) para cada categoria com base nas 
 Responda ESTRITAMENTE em JSON válido, sem texto adicional:
 {"metrics": {"assimilacao": N, "tratamento": N, "conversao": N, "coordenacao": N}, "insight": "string com diagnóstico pedagógico em português"}`;
 
-// ---------- Handler principal ----------
+// ---------- GET: retorna diagnósticos salvos ----------
+export async function GET() {
+  const records = global.__neuromapStore;
+  return NextResponse.json({
+    count: records.length,
+    records: records.slice(-20), // últimos 20
+  });
+}
+
+// ---------- POST: processa nova submissão ----------
 export async function POST(request: NextRequest) {
+  const body: AnalyzeRequest = await request.json();
+  const { imageUrl, timestamp } = body;
+  const studentEmail = body.studentEmail || "anonimo@aluno.com";
+  const questionTitle = body.questionTitle || "Sem título";
+
+  if (!imageUrl) {
+    return NextResponse.json({ error: "imageUrl é obrigatório" }, { status: 400 });
+  }
+
+  const deepseekApiKey = process.env.DEEPSEEK_API_KEY;
+
+  // ── Se não tiver API key, retorna diagnóstico simulado (útil para testes) ──
+  if (!deepseekApiKey) {
+    console.warn("[NeuroMap] DEEPSEEK_API_KEY não configurada — retornando diagnóstico simulado.");
+    const mock: DiagnosisRecord = {
+      id: Date.now().toString(),
+      studentEmail,
+      questionTitle,
+      timestamp,
+      metrics: { assimilacao: 3, tratamento: 2, conversao: 1, coordenacao: 2 },
+      insight:
+        "⚠️ Diagnóstico simulado (API key ausente). Configure DEEPSEEK_API_KEY na Vercel para análise real.",
+    };
+    global.__neuromapStore.push(mock);
+    return NextResponse.json({ success: true, ...mock });
+  }
+
   try {
-    const body: AnalyzeRequest = await request.json();
-    const { imageUrl, timestamp } = body;
-    // FIX Bug 4: studentEmail é opcional — usa fallback se ausente
-    const studentEmail = body.studentEmail || "anonimo@aluno.com";
-    const questionTitle = body.questionTitle || "";
+    console.log(`[NeuroMap] Analisando: ${studentEmail} | ${questionTitle}`);
 
-    if (!imageUrl) {
-      return NextResponse.json(
-        { error: "imageUrl é obrigatório" },
-        { status: 400 }
-      );
-    }
-
-    console.log(`[NeuroMap] Analisando submissão de ${studentEmail} às ${timestamp}`);
-
-    // -------------------------------------------------------
-    // ETAPA 1: Download da imagem como buffer binário
-    // O arraybuffer é necessário para processar o binário bruto
-    // da imagem antes de convertê-lo em Base64 para a API Vision.
-    // -------------------------------------------------------
+    // Etapa 1: Download da imagem como arraybuffer
     const imageResponse = await axios.get(imageUrl, {
       responseType: "arraybuffer",
       timeout: 15000,
-      headers: { "Accept": "image/*" },
+      headers: { Accept: "image/*" },
     });
 
-    // -------------------------------------------------------
-    // ETAPA 2: Conversão Buffer → Base64
-    // Buffer.from() aceita ArrayBuffer diretamente e .toString("base64")
-    // produz a string que a API Vision espera no campo image_url.
-    // -------------------------------------------------------
+    // Etapa 2: Buffer → Base64 → data URL
     const base64Image = Buffer.from(imageResponse.data as ArrayBuffer).toString("base64");
     const mimeType = (imageResponse.headers["content-type"] as string) || "image/jpeg";
     const dataUrl = `data:${mimeType};base64,${base64Image}`;
 
-    // -------------------------------------------------------
-    // ETAPA 3: Chamada à API DeepSeek Vision
-    // O modelo suporta mensagens multimodais: texto + imagem.
-    // A imagem é enviada como data URL base64 no content array.
-    // -------------------------------------------------------
-    const deepseekApiKey = process.env.DEEPSEEK_API_KEY;
-    if (!deepseekApiKey) {
-      throw new Error("DEEPSEEK_API_KEY não configurada nas variáveis de ambiente");
-    }
-
-    // FIX Bug 3: nome correto do modelo DeepSeek com suporte a visão
+    // Etapa 3: Chamada DeepSeek Vision
     const deepseekResponse = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
       {
         model: "deepseek-vl2",
         messages: [
-          {
-            role: "system",
-            content: DUVAL_SYSTEM_PROMPT,
-          },
+          { role: "system", content: DUVAL_SYSTEM_PROMPT },
           {
             role: "user",
             content: [
-              {
-                type: "image_url",
-                image_url: { url: dataUrl },
-              },
+              { type: "image_url", image_url: { url: dataUrl } },
               {
                 type: "text",
-                // Inclui o título da questão no prompt para melhor contextualização
-                text: questionTitle
-                  ? `Questão: "${questionTitle}"\n\nAnalise a resolução acima segundo a Teoria de Duval e retorne o JSON de diagnóstico.`
-                  : "Analise esta resolução matemática segundo a Teoria de Duval e retorne o JSON de diagnóstico.",
+                text: `Questão: "${questionTitle}"\n\nAnalise a resolução acima segundo a Teoria de Duval e retorne o JSON de diagnóstico.`,
               },
             ],
           },
@@ -122,50 +131,37 @@ export async function POST(request: NextRequest) {
           Authorization: `Bearer ${deepseekApiKey}`,
           "Content-Type": "application/json",
         },
-        timeout: 30000,
+        timeout: 45000,
       }
     );
 
-    // -------------------------------------------------------
-    // ETAPA 4: Parse da resposta do modelo
-    // O modelo retorna um JSON como string no campo content.
-    // Fazemos parse seguro para garantir o contrato de dados.
-    // -------------------------------------------------------
+    // Etapa 4: Parse da resposta
     const rawContent: string = deepseekResponse.data.choices[0].message.content;
-    
-    // Extrai o JSON mesmo que o modelo inclua markdown (```json ... ```)
     const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error(`Resposta inesperada do DeepSeek: ${rawContent}`);
-    }
-    
-    const diagnosis: DeepSeekResponse = JSON.parse(jsonMatch[0]);
+    if (!jsonMatch) throw new Error(`Resposta inesperada do DeepSeek: ${rawContent}`);
+    const diagnosis = JSON.parse(jsonMatch[0]);
 
-    // -------------------------------------------------------
-    // ETAPA 5: Persistência (simulada com log estruturado)
-    // Em produção, substitua por: await db.save({ studentEmail, timestamp, diagnosis })
-    // -------------------------------------------------------
-    console.log("[NeuroMap] [DB-MOCK] Diagnóstico salvo:", JSON.stringify({
+    // Etapa 5: Salvar no store
+    const record: DiagnosisRecord = {
+      id: Date.now().toString(),
       studentEmail,
+      questionTitle,
       timestamp,
       metrics: diagnosis.metrics,
       insight: diagnosis.insight,
-    }));
+    };
+    global.__neuromapStore.push(record);
+    console.log("[NeuroMap] Salvo:", record.id);
 
-    return NextResponse.json({
-      success: true,
-      studentEmail,
-      timestamp,
-      ...diagnosis,
-    });
-
+    return NextResponse.json({ success: true, ...record });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Erro desconhecido";
-    console.error("[NeuroMap] Erro na análise:", message);
+    console.error("[NeuroMap] Erro:", message);
 
+    // Retorna 200 com erro descrito para o Apps Script poder registrar na planilha
     return NextResponse.json(
-      { error: "Falha na análise NeuroMap", details: message },
-      { status: 500 }
+      { success: false, error: message, metrics: null, insight: null },
+      { status: 200 } // 200 propositalmente para o Apps Script reconhecer
     );
   }
 }
