@@ -9,6 +9,9 @@
 var NEUROMAP_API_URL = "https://neuromaplira.vercel.app/api/analyze";
 
 function onFormSubmit(e) {
+  // Força o escopo de permissão do Google Drive no Token
+  var _driveScopeFix = DriveApp.getStorageUsed(); 
+
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   var uploads = [];
   var studentEmail = "anonimo@aluno.com";

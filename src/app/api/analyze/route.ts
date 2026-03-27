@@ -119,7 +119,7 @@ export async function POST(request: NextRequest) {
       throw new Error("GOOGLE_AI_KEY não configurada. Pegue sua chave grátis em aistudio.google.com");
     }
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${googleAiKey}`;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key=${googleAiKey}`;
     
     // Remove o prefixo "data:image/jpeg;base64," para o Gemini
     const pureBase64 = base64Image;
