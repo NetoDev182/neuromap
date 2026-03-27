@@ -74,10 +74,11 @@ export async function POST(request: NextRequest) {
   }
 
   const deepseekApiKey = process.env.DEEPSEEK_API_KEY;
+  const googleAiKey = process.env.GOOGLE_AI_KEY;
 
-  // ── Se não tiver API key, retorna diagnóstico simulado (útil para testes) ──
-  if (!deepseekApiKey) {
-    console.warn("[NeuroMap] DEEPSEEK_API_KEY não configurada — retornando diagnóstico simulado.");
+  // ── Se não tiver API keys, retorna diagnóstico simulado (útil para testes) ──
+  if (!deepseekApiKey && !googleAiKey) {
+    console.warn("[NeuroMap] APIs não configuradas — retornando diagnóstico simulado.");
     const mock: DiagnosisRecord = {
       id: Date.now().toString(),
       studentEmail,
@@ -111,41 +112,55 @@ export async function POST(request: NextRequest) {
     const mimeType = (imageResponse.headers["content-type"] as string) || "image/jpeg";
     const dataUrl = `data:${mimeType};base64,${base64Image}`;
 
-    // Etapa 3: Chamada DeepSeek Vision
-    const deepseekResponse = await axios.post(
-      "https://api.deepseek.com/v1/chat/completions",
+    // Etapa 3: Chamada Gemini 1.5 Flash (Google AI Studio)
+    // Multimodal: Entende a imagem e o contexto pedagógico de Duval
+    const googleAiKey = process.env.GOOGLE_AI_KEY;
+    if (!googleAiKey) {
+      throw new Error("GOOGLE_AI_KEY não configurada. Pegue sua chave grátis em aistudio.google.com");
+    }
+
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${googleAiKey}`;
+    
+    // Remove o prefixo "data:image/jpeg;base64," para o Gemini
+    const pureBase64 = base64Image;
+
+    const geminiResponse = await axios.post(
+      geminiUrl,
       {
-        model: "deepseek-vl2",
-        messages: [
-          { role: "system", content: DUVAL_SYSTEM_PROMPT },
+        contents: [
           {
-            role: "user",
-            content: [
-              { type: "image_url", image_url: { url: dataUrl } },
+            parts: [
               {
-                type: "text",
-                text: `Questão: "${questionTitle}"\n\nAnalise a resolução acima segundo a Teoria de Duval e retorne o JSON de diagnóstico.`,
+                text: `${DUVAL_SYSTEM_PROMPT}\n\nQuestão: "${questionTitle}"\n\nAnalise a resolução acima segundo a Teoria de Duval e retorne o JSON de diagnóstico.`,
+              },
+              {
+                inline_data: {
+                  mime_type: mimeType,
+                  data: pureBase64,
+                },
               },
             ],
           },
         ],
-        max_tokens: 512,
-        temperature: 0.2,
+        generationConfig: {
+          temperature: 0.1,
+          response_mime_type: "application/json",
+        },
       },
       {
-        headers: {
-          Authorization: `Bearer ${deepseekApiKey}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 45000,
+        headers: { "Content-Type": "application/json" },
+        timeout: 30000,
       }
     );
 
-    // Etapa 4: Parse da resposta
-    const rawContent: string = deepseekResponse.data.choices[0].message.content;
-    const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error(`Resposta inesperada do DeepSeek: ${rawContent}`);
-    const diagnosis = JSON.parse(jsonMatch[0]);
+    // Etapa 4: Parse da resposta do Gemini
+    const candidates = geminiResponse.data.candidates;
+    if (!candidates || candidates.length === 0) {
+      throw new Error("Gemini não retornou candidatos de resposta.");
+    }
+    
+    const rawContent = candidates[0].content.parts[0].text;
+    const diagnosis = JSON.parse(rawContent);
 
     // Etapa 5: Salvar no store
     const record: DiagnosisRecord = {
@@ -157,11 +172,23 @@ export async function POST(request: NextRequest) {
       insight: diagnosis.insight,
     };
     global.__neuromapStore.push(record);
-    console.log("[NeuroMap] Salvo:", record.id);
+    console.log("[NeuroMap] Análise Gemini salva:", record.id);
 
     return NextResponse.json({ success: true, ...record });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "Erro desconhecido";
+    let message = "Erro desconhecido";
+    if (axios.isAxiosError(error)) {
+      if (error.response && error.response.data) {
+        message = typeof error.response.data === "string" 
+          ? error.response.data 
+          : JSON.stringify(error.response.data);
+      } else {
+        message = error.message;
+      }
+    } else if (error instanceof Error) {
+      message = error.message;
+    }
+    
     console.error("[NeuroMap] Erro:", message);
 
     // Retorna 200 com erro descrito para o Apps Script poder registrar na planilha
