@@ -9,8 +9,9 @@ import axios from "axios";
 
 // ---------- Tipos de contrato ----------
 interface AnalyzeRequest {
-  studentEmail: string;
+  studentEmail?: string;       // FIX Bug 4: agora opcional
   imageUrl: string;
+  questionTitle?: string;      // contexto da questão para o prompt
   timestamp: string;
 }
 
@@ -42,11 +43,14 @@ Responda ESTRITAMENTE em JSON válido, sem texto adicional:
 export async function POST(request: NextRequest) {
   try {
     const body: AnalyzeRequest = await request.json();
-    const { studentEmail, imageUrl, timestamp } = body;
+    const { imageUrl, timestamp } = body;
+    // FIX Bug 4: studentEmail é opcional — usa fallback se ausente
+    const studentEmail = body.studentEmail || "anonimo@aluno.com";
+    const questionTitle = body.questionTitle || "";
 
-    if (!imageUrl || !studentEmail) {
+    if (!imageUrl) {
       return NextResponse.json(
-        { error: "imageUrl e studentEmail são obrigatórios" },
+        { error: "imageUrl é obrigatório" },
         { status: 400 }
       );
     }
@@ -83,10 +87,11 @@ export async function POST(request: NextRequest) {
       throw new Error("DEEPSEEK_API_KEY não configurada nas variáveis de ambiente");
     }
 
+    // FIX Bug 3: nome correto do modelo DeepSeek com suporte a visão
     const deepseekResponse = await axios.post(
       "https://api.deepseek.com/v1/chat/completions",
       {
-        model: "deepseek-vision",
+        model: "deepseek-vl2",
         messages: [
           {
             role: "system",
@@ -101,13 +106,16 @@ export async function POST(request: NextRequest) {
               },
               {
                 type: "text",
-                text: "Analise esta resolução matemática segundo a Teoria de Duval e retorne o JSON de diagnóstico.",
+                // Inclui o título da questão no prompt para melhor contextualização
+                text: questionTitle
+                  ? `Questão: "${questionTitle}"\n\nAnalise a resolução acima segundo a Teoria de Duval e retorne o JSON de diagnóstico.`
+                  : "Analise esta resolução matemática segundo a Teoria de Duval e retorne o JSON de diagnóstico.",
               },
             ],
           },
         ],
         max_tokens: 512,
-        temperature: 0.2, // Baixa temperatura para respostas mais determinísticas/consistentes
+        temperature: 0.2,
       },
       {
         headers: {
